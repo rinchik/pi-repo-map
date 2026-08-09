@@ -19,6 +19,7 @@ type Cache = Map<string, ParseResult>;
 
 // Session-scoped cache keyed by SHA-256 of file content
 const parseCache: Cache = new Map();
+const MAX_CACHE_ENTRIES = 2000;
 
 function contentHash(content: string): string {
   return createHash('sha256').update(content, 'utf-8').digest('hex');
@@ -29,6 +30,7 @@ export function getCachedParse(content: string): ParseResult | null {
 }
 
 export function setCachedParse(content: string, result: ParseResult): void {
+  if (parseCache.size >= MAX_CACHE_ENTRIES) parseCache.clear();
   parseCache.set(contentHash(content), result);
 }
 
