@@ -9,31 +9,13 @@ type ContextValue = string | number | boolean | null | undefined;
 interface ReportOptions {
   context?: Record<string, ContextValue>;
   onceKey?: string;
-  includeStack?: boolean;
   notify?: NotifyFn;
 }
 
 const reportedKeys = new Set<string>();
 
-function isDebugEnabled(): boolean {
-  const flag = process.env.REPO_MAP_DEBUG ?? process.env.PI_DEBUG ?? process.env.DEBUG;
-  return flag === '1' || flag === 'true';
-}
-
 function stringifyUnknown(value: unknown): string {
-  if (value instanceof Error) {
-    return value.message;
-  }
-
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
+  return 'unknown error';
 }
 
 function formatContext(context?: Record<string, ContextValue>): string {
@@ -43,7 +25,7 @@ function formatContext(context?: Record<string, ContextValue>): string {
   if (entries.length === 0) return '';
 
   return entries
-    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .map(([key, value]) => `${key}=${typeof value === 'string' ? '<redacted>' : String(value)}`)
     .join(' ');
 }
 
@@ -80,12 +62,7 @@ function report(level: LogLevel, message: string, error?: unknown, options?: Rep
   }
 
   if (error !== undefined) {
-    const includeStack = options?.includeStack ?? (options?.notify ? false : isDebugEnabled());
-    if (error instanceof Error && includeStack && error.stack) {
-      parts.push(error.stack);
-    } else {
-      parts.push(`error=${stringifyUnknown(error)}`);
-    }
+    parts.push(`error=${stringifyUnknown(error)}`);
   }
 
   const details = parts.join(' | ');
@@ -99,7 +76,7 @@ function report(level: LogLevel, message: string, error?: unknown, options?: Rep
 
 export function errorSignature(error: unknown): string {
   if (error instanceof Error) {
-    return `${error.name}:${error.message}`;
+    return error.name;
   }
 
   return stringifyUnknown(error);

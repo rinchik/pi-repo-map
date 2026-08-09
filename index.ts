@@ -1,14 +1,12 @@
 // Based on workflow-extension (ISC License)
 // Copyright (c) 2026 popododo0720
 
-import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from 'typebox';
-import * as os from 'os';
-import { Text } from "@earendil-works/pi-tui";
+import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { loadConfig, type RepoMapConfig } from './src/config';
 import { type NotifyFn, reportError } from './src/errorReporter';
-import { generateRepoMap, generateSymbols } from './src/generator';
+import { generateRepoMap } from './src/generator';
+import { resolveRepositoryRoot } from './src/security';
 import {
   type ProgressCallback,
   type SetProgressWidget,
@@ -47,18 +45,19 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // Skip repo-map generation in the home directory to avoid scanning unrelated files
-      if (os.homedir() === ctx.cwd) {
+      const root = await resolveRepositoryRoot(ctx.cwd);
+      if (!root) {
+        ctx.hasUI && ctx.ui.notify('Repo map skipped: workspace root is unsafe or unavailable', 'warning');
         return;
       }
 
-      const config = await loadConfig(ctx.cwd);
+      const config = await loadConfig(root);
       if (config.enabled === false) {
         return;
       }
 
       // Check cache
-      if (cache && cache.cwd === ctx.cwd) {
+      if (cache && cache.cwd === root) {
         return {
           systemPrompt: event.systemPrompt + injectRepoMap(cache.map),
         };
@@ -82,7 +81,7 @@ export default function (pi: ExtensionAPI) {
         : undefined;
 
       // Generate fresh repo map with progress reporting
-      const repoMap = await buildRepoMap(ctx.cwd, config, notify, progressCallback, ctx.signal);
+      const repoMap = await buildRepoMap(root, config, notify, progressCallback, ctx.signal);
 
       // Clear progress widget
       if (setWidget) {
@@ -97,7 +96,7 @@ export default function (pi: ExtensionAPI) {
         ? ctx.ui.notify.bind(ctx.ui)
         : undefined;
       reportError('Repo-map hook failed', err, {
-        context: { cwd: ctx.cwd },
+        context: { workspace: 'current workspace' },
         notify,
       });
       // Clear progress widget on error
@@ -109,56 +108,22 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.registerTool(defineTool({
-    name: "symbols",
-    label: "Symbols",
-    description: "Read only the symbols in a file (formatted like the repo map), or pass a directory path to generate an updated repository map",
-    promptSnippet: "Read a compact symbol outline for a file or directory",
-    promptGuidelines: [
-      "Use symbols when you need a quick structural overview of a file without reading its full contents.",
-      "The repository map is a snapshot from session start and may be stale. Use symbols with a directory path (e.g., the project root) to generate an updated map when you suspect it is out of date (for example, after creating, moving, or renaming files).",
-    ],
-
-    parameters: Type.Object({
-      path: Type.String({ description: 'Path to the file or directory to inspect, relative to the current working directory or absolute. For files, returns a symbol outline. For directories, returns an updated repository map.' }),
-    }),
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      try {
-        const notify: NotifyFn | undefined = ctx.hasUI
-          ? ctx.ui.notify.bind(ctx.ui)
-          : undefined;
-        const symbols = await generateSymbols(params.path, ctx.cwd, notify, ctx.signal);
-        return {
-          content: [{ type: "text", text: symbols || '(no symbols found)' }],
-          details: { path: params.path },
-        };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text", text: message }],
-          details: { path: params.path },
-          isError: true,
-        };
-      }
-    },
-
-    renderCall(args, theme, _context) {
-      const text = theme.fg("toolTitle", theme.bold("symbols ")) + theme.fg("accent", args.path);
-      return new Text(text, 0, 0);
-    },
-  }));
-
   pi.registerCommand("repo-map", {
     description: "Print the current repo map",
     handler: async (_args, ctx) => {
-      const config = await loadConfig(ctx.cwd);
+      const root = await resolveRepositoryRoot(ctx.cwd);
+      if (!root) {
+        ctx.ui.notify('Repo map skipped: workspace root is unsafe or unavailable', 'warning');
+        return;
+      }
+      const config = await loadConfig(root);
       if (config.enabled === false) {
         ctx.ui.notify('Repo map is disabled for this project', 'info');
         return;
       }
 
       const repoMap = await buildRepoMap(
-        ctx.cwd,
+        root,
         config,
         ctx.hasUI ? ctx.ui.notify.bind(ctx.ui) : undefined,
         undefined,

@@ -4,8 +4,10 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { SUPPORTED_EXTENSIONS } from './languages';
+import { isSafeDirectory, isSafeRegularFile } from './security';
 
-const MAX_FILE_SIZE = 100 * 1024; // 100KB
+export const MAX_FILE_SIZE = 100 * 1024;
+export const MAX_DISCOVERED_FILES = 2000;
 
 export interface FileInfo {
   path: string;
@@ -18,23 +20,27 @@ export async function collectFiles(
     maxFiles: number;
     excludedDirs: string[];
     onProgress?: (current: number) => void;
+    signal?: AbortSignal;
   }
 ): Promise<FileInfo[]> {
   const files: FileInfo[] = [];
 
 
+  const maxFiles = Math.min(Math.max(1, options.maxFiles), MAX_DISCOVERED_FILES);
   async function walk(dir: string): Promise<void> {
-    if (files.length >= options.maxFiles) return;
+    if (options.signal?.aborted || files.length >= maxFiles || !await isSafeDirectory(rootDir, dir)) return;
 
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
 
       for (const entry of entries) {
-        if (files.length >= options.maxFiles) break;
+        if (options.signal?.aborted || files.length >= maxFiles) break;
 
         const fullPath = path.join(dir, entry.name);
 
-        if (entry.isDirectory()) {
+        if (entry.isSymbolicLink()) {
+          continue;
+        } else if (entry.isDirectory()) {
           const lowerName = entry.name.toLowerCase();
           if (options.excludedDirs.some(dir => lowerName === dir.toLowerCase())) {
             continue;
@@ -45,8 +51,9 @@ export async function collectFiles(
           if (!SUPPORTED_EXTENSIONS.has(ext)) continue;
 
           try {
-            const stat = await fs.stat(fullPath);
-            if (stat.size > MAX_FILE_SIZE) continue;
+            if (!await isSafeRegularFile(rootDir, fullPath)) continue;
+            const stat = await fs.lstat(fullPath);
+            if (!stat.isFile() || stat.size > MAX_FILE_SIZE) continue;
 
             const relativePath = path.relative(rootDir, fullPath);
             files.push({ path: fullPath, relativePath });

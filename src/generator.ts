@@ -1,16 +1,15 @@
 // Based on workflow-extension (ISC License)
 // Copyright (c) 2026 popododo0720
 
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { getCachedParse, setCachedParse, type ParseResult } from './cache';
 import { collectFiles } from './collector';
-import { loadConfig } from './config';
+import { MAX_TOKEN_BUDGET, MIN_TOKEN_BUDGET } from './config';
 import { reportError, reportWarning, type NotifyFn } from './errorReporter';
 import { parseFile, initTreeSitter } from './parser';
 import { type ProgressCallback } from './progress';
 import { processGraph } from './graph';
-import { renderRepoMap, renderSymbols } from './renderer';
+import { renderRepoMap } from './renderer';
+import { readSafeRegularFile, resolveRepositoryRoot } from './security';
 
 export interface RepoMapGenerationConfig {
   tokenBudget: number;
@@ -26,6 +25,11 @@ export async function generateRepoMap(
   signal?: AbortSignal
 ): Promise<string> {
   try {
+    const root = await resolveRepositoryRoot(cwd);
+    if (!root) {
+      reportWarning('Repo map skipped: workspace root is unsafe or unavailable', undefined, { notify });
+      return '';
+    }
     progress?.({
       phase: 'collecting',
       current: 0,
@@ -33,7 +37,7 @@ export async function generateRepoMap(
       message: 'Discovering files...',
     });
 
-    const files = await collectFiles(cwd, {
+    const files = await collectFiles(root, {
       maxFiles: config.maxFiles,
       excludedDirs: config.excludedDirs,
       onProgress: (count) => {
@@ -44,6 +48,7 @@ export async function generateRepoMap(
           message: `${count} files found`,
         });
       },
+      signal,
     });
 
     if (signal?.aborted) {
@@ -90,7 +95,7 @@ export async function generateRepoMap(
 
       const file = files[i];
       try {
-        const content = await fs.readFile(file.path, 'utf-8');
+        const content = await readSafeRegularFile(root, file.path);
         const cached = getCachedParse(content);
         if (cached) {
           parseResults.set(file.path, cached);
@@ -140,7 +145,10 @@ export async function generateRepoMap(
 
     progress?.({ phase: 'rendering', current: 0, total: 1, message: 'Generating repo map...' });
 
-    const result = renderRepoMap(rankedFiles, parseResults, config.tokenBudget);
+    const tokenBudget = Number.isInteger(config.tokenBudget)
+      ? Math.min(MAX_TOKEN_BUDGET, Math.max(MIN_TOKEN_BUDGET, config.tokenBudget))
+      : MIN_TOKEN_BUDGET;
+    const result = renderRepoMap(rankedFiles, parseResults, tokenBudget);
 
     progress?.({
       phase: 'done',
@@ -152,38 +160,10 @@ export async function generateRepoMap(
     return result;
   } catch (err) {
     reportError('Repo-map generation failed', err, {
-      context: { cwd },
+      context: { workspace: 'current workspace' },
       notify,
     });
     progress?.({ phase: 'done', current: 0, total: 0, message: 'Failed' });
     return '';
   }
-}
-
-export async function generateSymbols(
-  filePath: string,
-  cwd: string,
-  notify?: NotifyFn,
-  signal?: AbortSignal
-): Promise<string> {
-  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
-  const stat = await fs.stat(absolutePath);
-  if (stat.isDirectory()) {
-    const config = await loadConfig(absolutePath);
-    if (config.enabled === false) {
-      throw new Error(`Repo map is disabled for ${filePath}`);
-    }
-    return generateRepoMap(absolutePath, config, notify, undefined, signal);
-  }
-
-  const content = await fs.readFile(absolutePath, 'utf-8');
-  await initTreeSitter(notify);
-
-  const cached = getCachedParse(content);
-  const result = cached ?? await parseFile(absolutePath, content, notify);
-  if (!cached) {
-    setCachedParse(content, result);
-  }
-
-  return renderSymbols(result.symbols);
 }

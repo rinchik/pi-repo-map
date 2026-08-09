@@ -105,7 +105,7 @@ export async function parseFile(
     // the WASM module state, causing irrecoverable parser errors for the process.
     reportWarning('Tree-sitter internal parse failure; using empty parse result', err, {
       onceKey: `tree-sitter-parse:${errorSignature(err)}`,
-      context: { filePath },
+      context: { file: path.basename(filePath) },
       notify,
     });
     return { symbols: [], imports: [] };
